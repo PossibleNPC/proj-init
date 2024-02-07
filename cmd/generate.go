@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -22,7 +23,21 @@ type Language struct {
 	Name         string
 	CliEvoke     string
 	CliEvokeInit string
+	CliArgs      []string
+	RequireChDir bool
 	VersionFlag  []string
+}
+
+func (l Language) stringifyCliArgs() string {
+	s := strings.Builder{}
+	for _, a := range l.CliArgs {
+		s.WriteString(a)
+		s.WriteString(" ")
+	}
+
+	ts := strings.Trim(s.String(), " ")
+
+	return ts
 }
 
 type Languages []Language
@@ -48,31 +63,42 @@ var LANGUAGES = Languages{
 	Language{
 		Name:         "go",
 		CliEvoke:     "go",
-		CliEvokeInit: "go mod init",
+		CliEvokeInit: "go",
+		CliArgs:      []string{"mod", "init"},
+		RequireChDir: true,
 		VersionFlag:  []string{"version"},
 	},
 	Language{
 		Name:         "python",
 		CliEvoke:     "python3",
-		CliEvokeInit: "python3 -m venv",
+		CliEvokeInit: "python3",
+		CliArgs:      []string{"-m", "venv"},
+		RequireChDir: true,
 		VersionFlag:  []string{"--version", "-V", "-VV"},
 	},
 	Language{
 		Name:         "rust",
 		CliEvoke:     "rustc",
-		CliEvokeInit: "cargo new",
+		CliEvokeInit: "cargo",
+		CliArgs:      []string{"new"},
+		RequireChDir: false,
 		VersionFlag:  []string{"--version"},
 	},
+	// TODO: this is going to be a bit more complex
 	Language{
 		Name:         "typescript",
 		CliEvoke:     "tsc",
-		CliEvokeInit: "npm init",
+		CliEvokeInit: "npm",
+		CliArgs:      []string{"init"},
+		RequireChDir: true,
 		VersionFlag:  []string{"--version", "-v"},
 	},
 	Language{
 		Name:         "zig",
 		CliEvoke:     "zig",
-		CliEvokeInit: "zig init",
+		CliEvokeInit: "zig",
+		CliArgs:      []string{"init-exe"},
+		RequireChDir: true,
 		VersionFlag:  []string{"version"},
 	},
 }
@@ -107,6 +133,8 @@ var generateCmd = &cobra.Command{
 	},
 }
 
+// TODO: each of these have custom logic for creating a project
+// swap from a FOR loop to Switch on the L.Name
 func createProject() error {
 	// check if the path exists
 	if _, err := os.Stat(projectPath); os.IsNotExist(err) {
@@ -132,31 +160,55 @@ func createProject() error {
 	// before running the language's cli to create the project
 	// this is incorrect because some languages don't need to be
 	// in the project directory to create the project
-	err = os.Chdir(fmt.Sprintf("%s/%s", projectPath, projectName))
-	if err != nil {
-		return fmt.Errorf("could not change directory to project: %v", err)
-	}
+	// err = os.Chdir(fmt.Sprintf("%s/%s", projectPath, projectName))
+	// if err != nil {
+	// 	return fmt.Errorf("could not change directory to project: %v", err)
+	// }
 
 	// I think this points to a need to tie our user input
 	// to one of the languages in LANGUAGES for easier use
 
+	// Even though I don't think this next is very good, it'll work
+	var cmd *exec.Cmd
+
 	// now we evoke the language's cli to create the project
 	for _, l := range LANGUAGES {
 		if lang == l.Name {
-			// this highlights an bug
-			// some projects with package managers don't need to be in the project directory
-			// when creating the project
-			// others do
-			// TODO: identify the languages that need to be in the project directory
-			// and those that don't
-			// TODO: this is going to be hardcoded to prove it works under the happy path
-			cmd := exec.Command("zig", "init-exe")
-			// set the environment for the cmd
-			cmd.Env = os.Environ()
-			err := cmd.Run()
-			if err != nil {
-				return fmt.Errorf("issue running language, unable to generate project for %s", lang)
+			if l.RequireChDir {
+				err := os.Chdir(fmt.Sprintf("%s/%s", projectPath, projectName))
+				if err != nil {
+					return fmt.Errorf("could not change directory to project: %v", err)
+				}
+				if l.Name == "zig" {
+					cmd = exec.Command(l.CliEvokeInit, l.stringifyCliArgs())
+				} else {
+					cmd = exec.Command(l.CliEvokeInit, l.stringifyCliArgs(), projectName)
+				}
+
+				// this highlights an bug
+				// some projects with package managers don't need to be in the project directory
+				// when creating the project
+				// others do
+				// TODO: identify the languages that need to be in the project directory
+				// and those that don't
+				// TODO: this is going to be hardcoded to prove it works under the happy path
+				// cmd = exec.Command(l.Name, l.stringifyCliArgs(), projectName)
+				// set the environment for the cmd
+				cmd.Env = os.Environ()
+				err = cmd.Run()
+				if err != nil {
+					return fmt.Errorf("issue running language, unable to generate project for %s", lang)
+				}
+			} else {
+				cmd = exec.Command(l.CliEvokeInit, l.stringifyCliArgs(), projectName)
+				// set the environment for the cmd
+				cmd.Env = os.Environ()
+				err = cmd.Run()
+				if err != nil {
+					return fmt.Errorf("issue running language, unable to generate project for %s", lang)
+				}
 			}
+
 			// TODO: project path could include relative paths, so
 			// we should clean the path first before printing to make it
 			// more readable
@@ -180,11 +232,13 @@ func validateLanguageAvailable() error {
 	// based on one of the version flags
 	for _, l := range LANGUAGES {
 		if lang == l.Name {
+			fmt.Println("running language version check")
 			cmd := exec.Command(l.CliEvoke, l.VersionFlag[0])
 			err := cmd.Run()
 			if err != nil {
-				return fmt.Errorf("issue running language, unable to generate project for %s", lang)
+				return fmt.Errorf("issue running language check, cannot generate project for %s", lang)
 			}
+			fmt.Println("language is available")
 			return nil
 		}
 	}
